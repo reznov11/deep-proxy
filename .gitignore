@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 *.key
+*.crt
 *.md
 .vscode/
 .mypy_cache/
