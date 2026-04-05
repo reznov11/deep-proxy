@@ -24,6 +24,16 @@ Environment:
   DEEP_PROXY_INGEST_URL   default http://127.0.0.1:8001/api/ingest/flow
   DEEP_PROXY_INGEST_TOKEN must match INGEST_API_TOKEN in Deep Proxy .env (if set)
   DEEP_PROXY_MAX_BODY     max bytes per request/response body in JSON (default 524288)
+  PROXY_USER / PROXY_PASS Basic proxy auth expected from clients (Proxy-Authorization)
+  PROXY_REQUIRE_AUTH      default 1; set 0 to disable proxy auth (dev only)
+
+Auth runs in http_connect + request (before upstream). Ingest is skipped for HTTP 407.
+
+curl (important): -x takes the *next* argument as the proxy URL. Wrong: curl -x -v http://u:p@host:8080
+(that sets proxy to "-v", credentials never sent → 407). Use either:
+  curl -k -v -x http://USER:PASS@localhost:8080 https://example.com/
+or:
+  curl -k -v -x http://localhost:8080 -U USER:PASS https://example.com/
 
 Point your client at mitmproxy (e.g. 127.0.0.1:8080). Install mitmproxy's CA on the client.
 Deep Proxy (python -m app.main) must be running (dashboard + ingest on 8001, proxy on 9090).
@@ -37,12 +47,80 @@ import urllib.request
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import base64
 from mitmproxy import ctx, http
 
 
 INGEST_URL = os.environ.get("DEEP_PROXY_INGEST_URL", "http://127.0.0.1:8001/api/ingest/flow")
 INGEST_TOKEN = os.environ.get("DEEP_PROXY_INGEST_TOKEN", "")
 MAX_BODY = int(os.environ.get("DEEP_PROXY_MAX_BODY", "524288"))
+
+PROXY_USER = os.getenv("PROXY_USER", "proxy_user").strip()
+PROXY_PASS = os.getenv("PROXY_PASS", "proxy_pass").strip()
+# Set PROXY_REQUIRE_AUTH=0 to disable proxy checks (local dev only).
+PROXY_REQUIRE_AUTH = os.getenv("PROXY_REQUIRE_AUTH", "1").lower() in ("1", "true", "yes")
+
+
+def _proxy_auth_enabled() -> bool:
+    return PROXY_REQUIRE_AUTH
+
+
+def _proxy_authorization(flow: http.HTTPFlow) -> str | None:
+    """Case-insensitive Proxy-Authorization (mitmproxy may normalize header names)."""
+    for name, value in flow.request.headers.items():
+        if name.lower() == "proxy-authorization":
+            if isinstance(value, bytes):
+                return value.decode("latin-1", "replace")
+            return str(value)
+    return None
+
+
+def _check_auth(flow: http.HTTPFlow) -> bool:
+    auth = _proxy_authorization(flow)
+    if not auth:
+        return False
+    parts = auth.strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "basic":
+        return False
+    encoded = parts[1].strip()
+    try:
+        raw = base64.b64decode(encoded, validate=False)
+        decoded = raw.decode("utf-8", errors="replace")
+        user, pwd = decoded.split(":", 1)
+        return user.strip() == PROXY_USER and pwd == PROXY_PASS
+    except Exception:
+        return False
+
+
+def _reject(flow: http.HTTPFlow) -> None:
+    flow.response = http.Response.make(
+        407,
+        b"Proxy Authentication Required",
+        {"Proxy-Authenticate": 'Basic realm="DeepProxy"'},
+    )
+
+
+def http_connect(flow: http.HTTPFlow) -> None:
+    """
+    CONNECT must be authenticated *before* the tunnel (and before upstream proxy sees traffic).
+    Checking only in `response` is too late: the request may already have been forwarded.
+    """
+    if not _proxy_auth_enabled():
+        return
+    if _check_auth(flow):
+        return
+    _reject(flow)
+
+
+def request(flow: http.HTTPFlow) -> None:
+    """Plain HTTP proxy requests (non-CONNECT): reject before hitting the origin."""
+    if not _proxy_auth_enabled():
+        return
+    if flow.request.method.upper() == "CONNECT":
+        return
+    if _check_auth(flow):
+        return
+    _reject(flow)
 
 
 def _headers_as_dict(headers: Any) -> dict[str, str]:
@@ -101,9 +179,20 @@ def response(flow: http.HTTPFlow) -> None:
 
     Do NOT use mitmproxy's `done` hook here — `done` is a *lifecycle* event (addon/shutdown),
     not "flow finished", so ingest would never run per request.
+
+    Skip ingest for 407: after `request`/`http_connect` set that response, this hook still
+    runs; without an early return we would POST rejections to Deep Proxy.
+
+    DB rows can also come from Deep Proxy on port 9090 (upstream mode) — separate from ingest.
     """
     if not flow.response:
         return
+    if flow.response.status_code == 407:
+        return
+
+    if _proxy_auth_enabled() and not _check_auth(flow):
+        return
+
     req = flow.request
     resp = flow.response
 
