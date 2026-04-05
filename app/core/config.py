@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     # POST /api/ingest/flow (mitmproxy addon). If set, require X-Deep-Proxy-Ingest-Token header.
     ingest_api_token: str | None = None
 
+    # Dashboard (Jinja2 + session cookie). Set admin_password and session_secret in production.
+    admin_username: str = "admin"
+    admin_password: str = ""
+    session_secret: str = Field(
+        default="change-me-generate-a-long-random-session-secret",
+        description="Secret for signing session cookies (Starlette SessionMiddleware).",
+    )
+
     @property
     def database_url(self) -> str:
         return (

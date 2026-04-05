@@ -39,6 +39,7 @@ from urllib.parse import parse_qs, urlparse
 
 from mitmproxy import ctx, http
 
+
 INGEST_URL = os.environ.get("DEEP_PROXY_INGEST_URL", "http://127.0.0.1:8001/api/ingest/flow")
 INGEST_TOKEN = os.environ.get("DEEP_PROXY_INGEST_TOKEN", "")
 MAX_BODY = int(os.environ.get("DEEP_PROXY_MAX_BODY", "524288"))

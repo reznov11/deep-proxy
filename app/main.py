@@ -1,21 +1,30 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Header, HTTPException, Query
-from sqlalchemy import func, select
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
+from app.auth import SESSION_KEY
+from app.auth.dependencies import require_dashboard_auth
 from app.core.config import get_settings
-from app.core.database import get_engine, get_session_factory, init_db
+from app.core.database import get_engine, init_db
 from app.core.elastic import close_elasticsearch, ensure_index, get_elasticsearch
-from app.models.db_models import ProxyLog
 from app.models.schemas import ProxyLogDocument
 from app.services.logging_service import clamp_proxy_log_bodies, enqueue_log
+from app.services.logs_query import fetch_logs_page
 
 logger = logging.getLogger(__name__)
 
 tcp_server: asyncio.Server | None = None
+
+_BASE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 
 @asynccontextmanager
@@ -24,6 +33,15 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     await init_db()
     await ensure_index()
+
+    if not settings.admin_password:
+        logger.warning(
+            "ADMIN_PASSWORD is empty — dashboard login is disabled until you set credentials in .env"
+        )
+    if settings.session_secret.startswith("change-me"):
+        logger.warning(
+            "SESSION_SECRET is still the default — set a long random value in production (.env)"
+        )
 
     if not settings.ingest_api_token:
         logger.warning(
@@ -48,7 +66,18 @@ async def lifespan(app: FastAPI):
         await get_engine().dispose()
 
 
-app = FastAPI(title="Deep Proxy Dashboard", lifespan=lifespan)
+app = FastAPI(title="Deep Proxy — панель", lifespan=lifespan)
+
+_settings = get_settings()
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_settings.session_secret,
+    session_cookie="deep_proxy_session",
+    max_age=60 * 60 * 24 * 7,
+    same_site="lax",
+)
+
+app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
 
 
 @app.post("/api/ingest/flow")
@@ -72,44 +101,28 @@ async def ingest_flow_from_mitmproxy(
 
 
 @app.get("/api/logs")
-async def list_logs(
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=500),
+@app.get("/api/logs/")
+async def api_logs_dashboard(
+    _auth: Annotated[None, Depends(require_dashboard_auth)],
+    page: int = Query(1, ge=1),
+    from_date: str | None = None,
+    to_date: str | None = None,
+    method: str | None = None,
+    search: str | None = None,
 ) -> dict[str, Any]:
-    factory = get_session_factory()
-    async with factory() as session:
-        total = (await session.execute(select(func.count()).select_from(ProxyLog))).scalar_one()
-        result = await session.execute(
-            select(ProxyLog).order_by(ProxyLog.timestamp.desc()).offset(offset).limit(limit)
-        )
-        rows = result.scalars().all()
-        items: list[dict[str, Any]] = []
-        for r in rows:
-            items.append(
-                {
-                    "id": str(r.id),
-                    "timestamp": r.timestamp.isoformat() if r.timestamp else None,
-                    "method": r.method,
-                    "url": r.url,
-                    "request_headers": r.request_headers,
-                    "request_cookies": r.request_cookies,
-                    "request_body": r.request_body,
-                    "response_status": r.response_status,
-                    "response_headers": r.response_headers,
-                    "response_body": r.response_body,
-                    "duration_ms": r.duration_ms,
-                    "client_ip": r.client_ip,
-                    "user_agent": r.user_agent,
-                    "is_https": r.is_https,
-                    "tunnel_host": r.tunnel_host,
-                    "tunnel_port": r.tunnel_port,
-                }
-            )
-        return {"items": items, "total": total, "offset": offset, "limit": limit}
+    """
+    Paginated logs for the dashboard. Tries Elasticsearch first; falls back to PostgreSQL.
+    """
+    try:
+        return await fetch_logs_page(page, from_date, to_date, method, search)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.get("/api/search")
+@app.get("/api/search/")
 async def search_logs(
+    _auth: Annotated[None, Depends(require_dashboard_auth)],
     q: str | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=100),
@@ -144,6 +157,47 @@ async def search_logs(
     else:
         total_val = total
     return {"items": items, "total": total_val, "offset": offset, "limit": limit}
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if request.session.get(SESSION_KEY):
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"error": None})
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request, username: str = Form(), password: str = Form()):
+    settings = get_settings()
+    if not settings.admin_password:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": "Вход не настроен (укажите ADMIN_PASSWORD в .env)."},
+            status_code=503,
+        )
+    if username == settings.admin_username and password == settings.admin_password:
+        request.session[SESSION_KEY] = True
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"error": "Неверное имя пользователя или пароль."},
+        status_code=401,
+    )
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=303)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard_page(request: Request):
+    if not request.session.get(SESSION_KEY):
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(request, "dashboard.html", {})
 
 
 if __name__ == "__main__":
