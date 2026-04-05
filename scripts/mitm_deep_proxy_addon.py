@@ -27,7 +27,14 @@ Environment:
   PROXY_USER / PROXY_PASS Basic proxy auth expected from clients (Proxy-Authorization)
   PROXY_REQUIRE_AUTH      default 1; set 0 to disable proxy auth (dev only)
 
-Auth runs in http_connect + request (before upstream). Ingest is skipped for HTTP 407.
+Auth: CONNECT is checked in http_connect (Proxy-Authorization on CONNECT only). Plain HTTP
+proxy (no tunnel) is checked in request — curl sends Proxy-Authorization on that request.
+After authenticated CONNECT, inner HTTPS requests do NOT repeat Proxy-Authorization; we
+remember client_conn id until client_disconnected.
+
+client_ip in logs: if mitmproxy and Deep Proxy share one VPS, TCP logs on :9090 show
+127.0.0.1 (peer is local mitmproxy). Ingest uses flow.client_conn.peername (real client
+if they connect directly to mitmproxy's public port).
 
 curl (important): -x takes the *next* argument as the proxy URL. Wrong: curl -x -v http://u:p@host:8080
 (that sets proxy to "-v", credentials never sent → 407). Use either:
@@ -60,9 +67,20 @@ PROXY_PASS = os.getenv("PROXY_PASS", "proxy_pass").strip()
 # Set PROXY_REQUIRE_AUTH=0 to disable proxy checks (local dev only).
 PROXY_REQUIRE_AUTH = os.getenv("PROXY_REQUIRE_AUTH", "1").lower() in ("1", "true", "yes")
 
+# Client TCP connections that already passed proxy auth on CONNECT (inner HTTPS has no Proxy-Authorization).
+_connect_auth_ok: set[int] = set()
+
 
 def _proxy_auth_enabled() -> bool:
     return PROXY_REQUIRE_AUTH
+
+
+def _client_proxy_authorized(flow: http.HTTPFlow) -> bool:
+    if not _proxy_auth_enabled():
+        return True
+    if id(flow.client_conn) in _connect_auth_ok:
+        return True
+    return _check_auth(flow)
 
 
 def _proxy_authorization(flow: http.HTTPFlow) -> str | None:
@@ -108,19 +126,28 @@ def http_connect(flow: http.HTTPFlow) -> None:
     if not _proxy_auth_enabled():
         return
     if _check_auth(flow):
+        _connect_auth_ok.add(id(flow.client_conn))
         return
     _reject(flow)
 
 
 def request(flow: http.HTTPFlow) -> None:
-    """Plain HTTP proxy requests (non-CONNECT): reject before hitting the origin."""
+    """
+    Plain HTTP over proxy: curl sends Proxy-Authorization on the GET http://... request.
+    HTTPS: inner requests after CONNECT never include Proxy-Authorization — allow if CONNECT ok.
+    """
     if not _proxy_auth_enabled():
         return
     if flow.request.method.upper() == "CONNECT":
         return
-    if _check_auth(flow):
+    if _client_proxy_authorized(flow):
         return
     _reject(flow)
+
+
+def client_disconnected(client: object) -> None:
+    """Drop CONNECT auth marker so ids are not reused incorrectly (mitmproxy may recycle)."""
+    _connect_auth_ok.discard(id(client))
 
 
 def _headers_as_dict(headers: Any) -> dict[str, str]:
@@ -190,7 +217,7 @@ def response(flow: http.HTTPFlow) -> None:
     if flow.response.status_code == 407:
         return
 
-    if _proxy_auth_enabled() and not _check_auth(flow):
+    if not _client_proxy_authorized(flow):
         return
 
     req = flow.request
