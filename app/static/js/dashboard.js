@@ -223,7 +223,9 @@
     const src = $("data-source");
     if (src) {
       src.textContent =
-        data.source === "elasticsearch" ? "Источник: Elasticsearch" : "Источник: PostgreSQL (резерв)";
+        data.source === "postgresql"
+          ? "Источник: PostgreSQL"
+          : "Источник: " + (data.source || "—");
     }
     renderTable(lastItems);
     updatePagination();

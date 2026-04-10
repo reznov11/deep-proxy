@@ -116,7 +116,7 @@ async def api_logs_dashboard(
     search: str | None = None,
 ) -> dict[str, Any]:
     """
-    Paginated logs for the dashboard. Tries Elasticsearch first; falls back to PostgreSQL.
+    Paginated logs for the dashboard (PostgreSQL `proxy_logs` — same rows you manage in SQL).
     """
     try:
         return await fetch_logs_page(page, from_date, to_date, method, search)
