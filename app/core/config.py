@@ -64,6 +64,10 @@ class Settings(BaseSettings):
         default=True,
         description="When PROXY_USER and PROXY_PASS are set, require Basic Proxy-Authorization from clients.",
     )
+    proxy_log_auth_failures: bool = Field(
+        default=False,
+        description="If true, persist 407 responses (missing/invalid Proxy-Authorization) to the dashboard DB.",
+    )
 
     # Dashboard (Jinja2 + session cookie). Set admin_password and session_secret in production.
     admin_username: str = "admin"

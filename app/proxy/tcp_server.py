@@ -77,30 +77,31 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         host, port = parse_connect_target(target)
         connect_headers = parse_header_block(head)
         if not verify_proxy_basic_auth(connect_headers, settings):
-            cookie_header = next(
-                (v for k, v in connect_headers.items() if k.lower() == "cookie"),
-                None,
-            )
-            ua = next(
-                (v for k, v in connect_headers.items() if k.lower() == "user-agent"),
-                None,
-            )
-            await enqueue_log(
-                ProxyLogDocument(
-                    method="CONNECT",
-                    url=f"https://{host}:{port}/",
-                    is_https=True,
-                    tunnel_host=host,
-                    tunnel_port=port,
-                    request_query_params=extract_query_params(f"https://{host}:{port}/"),
-                    request_headers=connect_headers or None,
-                    request_cookies=parse_cookie_header(cookie_header) or None,
-                    client_ip=client_ip,
-                    user_agent=ua,
-                    response_status=407,
-                    proxy_note="HTTPS tunnel: proxy authentication required (TLS opaque; no decrypted content)",
+            if settings.proxy_log_auth_failures:
+                cookie_header = next(
+                    (v for k, v in connect_headers.items() if k.lower() == "cookie"),
+                    None,
                 )
-            )
+                ua = next(
+                    (v for k, v in connect_headers.items() if k.lower() == "user-agent"),
+                    None,
+                )
+                await enqueue_log(
+                    ProxyLogDocument(
+                        method="CONNECT",
+                        url=f"https://{host}:{port}/",
+                        is_https=True,
+                        tunnel_host=host,
+                        tunnel_port=port,
+                        request_query_params=extract_query_params(f"https://{host}:{port}/"),
+                        request_headers=connect_headers or None,
+                        request_cookies=parse_cookie_header(cookie_header) or None,
+                        client_ip=client_ip,
+                        user_agent=ua,
+                        response_status=407,
+                        proxy_note="HTTPS tunnel: proxy authentication required (TLS opaque; no decrypted content)",
+                    )
+                )
             try:
                 writer.write(_PROXY_407)
                 await writer.drain()
@@ -119,31 +120,32 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
     req_headers_early = parse_header_block(head)
     if not verify_proxy_basic_auth(req_headers_early, settings):
-        method_s = parts[0].decode("latin1", errors="replace")
-        url = parts[1].decode("latin1", errors="replace") if len(parts) > 1 else ""
-        cookie_header = next(
-            (v for k, v in req_headers_early.items() if k.lower() == "cookie"),
-            None,
-        )
-        ua = next(
-            (v for k, v in req_headers_early.items() if k.lower() == "user-agent"),
-            None,
-        )
-        is_https = url.strip().lower().startswith("https:")
-        await enqueue_log(
-            ProxyLogDocument(
-                method=method_s,
-                url=url,
-                is_https=is_https,
-                request_query_params=extract_query_params(url) if url else None,
-                request_headers=req_headers_early or None,
-                request_cookies=parse_cookie_header(cookie_header) or None,
-                client_ip=client_ip,
-                user_agent=ua,
-                response_status=407,
-                proxy_note="proxy authentication required",
+        if settings.proxy_log_auth_failures:
+            method_s = parts[0].decode("latin1", errors="replace")
+            url = parts[1].decode("latin1", errors="replace") if len(parts) > 1 else ""
+            cookie_header = next(
+                (v for k, v in req_headers_early.items() if k.lower() == "cookie"),
+                None,
             )
-        )
+            ua = next(
+                (v for k, v in req_headers_early.items() if k.lower() == "user-agent"),
+                None,
+            )
+            is_https = url.strip().lower().startswith("https:")
+            await enqueue_log(
+                ProxyLogDocument(
+                    method=method_s,
+                    url=url,
+                    is_https=is_https,
+                    request_query_params=extract_query_params(url) if url else None,
+                    request_headers=req_headers_early or None,
+                    request_cookies=parse_cookie_header(cookie_header) or None,
+                    client_ip=client_ip,
+                    user_agent=ua,
+                    response_status=407,
+                    proxy_note="proxy authentication required",
+                )
+            )
         try:
             writer.write(_PROXY_407)
             await writer.drain()

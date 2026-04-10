@@ -34,3 +34,5 @@ PROXY_USER=
 PROXY_PASS=
 # When true (default), require auth if PROXY_USER and PROXY_PASS are set. Set false for local testing only.
 PROXY_REQUIRE_AUTH=true
+# When true, failed auth (407) is stored in the dashboard; default false avoids noisy scans filling the log.
+PROXY_LOG_AUTH_FAILURES=false
