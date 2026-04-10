@@ -5,6 +5,20 @@ import h11
 HEADER_MAX = 1 << 20
 
 
+def parse_header_block(head: bytes) -> dict[str, str]:
+    """Parse header lines from raw HTTP message head (request line + headers, no body)."""
+    lines = head.split(b"\r\n")
+    headers: dict[str, str] = {}
+    for raw in lines[1:]:
+        if not raw.strip():
+            continue
+        if b":" not in raw:
+            continue
+        name, value = raw.split(b":", 1)
+        headers[name.decode("latin1").strip()] = value.decode("latin1").strip()
+    return headers
+
+
 class IncomingBodyTooLarge(ValueError):
     """Raised when request body exceeds configured max while reading from client."""
 

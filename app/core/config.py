@@ -52,11 +52,18 @@ class Settings(BaseSettings):
     )
     max_incoming_request_body_bytes: int = Field(
         default=32 * 1024 * 1024,
-        description="Max request body read from the client while parsing HTTP (mitmproxy → this proxy).",
+        description="Max request body read from the client while parsing HTTP for plain proxy requests.",
     )
 
-    # POST /api/ingest/flow (mitmproxy addon). If set, require X-Deep-Proxy-Ingest-Token header.
+    # POST /api/ingest/flow — optional external log push. If set, require X-Deep-Proxy-Ingest-Token header.
     ingest_api_token: str | None = None
+
+    proxy_user: str = ""
+    proxy_pass: str = ""
+    proxy_require_auth: bool = Field(
+        default=True,
+        description="When PROXY_USER and PROXY_PASS are set, require Basic Proxy-Authorization from clients.",
+    )
 
     # Dashboard (Jinja2 + session cookie). Set admin_password and session_secret in production.
     admin_username: str = "admin"

@@ -45,7 +45,12 @@ async def lifespan(app: FastAPI):
 
     if not settings.ingest_api_token:
         logger.warning(
-            "Ingest API /api/ingest/flow has no INGEST_API_TOKEN — anyone who can reach the dashboard can post logs."
+            "Ingest API /api/ingest/flow has no INGEST_API_TOKEN — anyone who can reach the host can post logs."
+        )
+    u, p = (settings.proxy_user or "").strip(), (settings.proxy_pass or "").strip()
+    if settings.proxy_require_auth and (not u or not p):
+        logger.warning(
+            "PROXY_REQUIRE_AUTH is enabled but PROXY_USER or PROXY_PASS is empty — no proxy authentication will be enforced."
         )
 
     from app.services.logging_service import start_logging_worker, stop_logging_worker
@@ -81,12 +86,12 @@ app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="sta
 
 
 @app.post("/api/ingest/flow")
-async def ingest_flow_from_mitmproxy(
+async def ingest_flow(
     body: ProxyLogDocument,
     x_deep_proxy_ingest_token: str | None = Header(default=None, alias="X-Deep-Proxy-Ingest-Token"),
 ) -> dict[str, str]:
     """
-    Push one decrypted HTTP(S) flow (e.g. from mitmproxy addon) into the same PG + ES pipeline as the TCP proxy.
+    Push a structured log document into the same PostgreSQL + Elasticsearch pipeline as the TCP proxy.
     Set INGEST_API_TOKEN in .env and send it as header X-Deep-Proxy-Ingest-Token.
     """
     settings = get_settings()
@@ -95,7 +100,7 @@ async def ingest_flow_from_mitmproxy(
             raise HTTPException(status_code=403, detail="invalid or missing ingest token")
     doc = clamp_proxy_log_bodies(body, settings.max_body_storage_bytes)
     if not doc.proxy_note:
-        doc = doc.model_copy(update={"proxy_note": "ingested via /api/ingest/flow (e.g. mitmproxy)"})
+        doc = doc.model_copy(update={"proxy_note": "ingested via POST /api/ingest/flow"})
     await enqueue_log(doc)
     return {"status": "queued"}
 

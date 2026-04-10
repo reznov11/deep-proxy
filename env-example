@@ -21,21 +21,16 @@ DASHBOARD_PORT=8001
 # Logging
 MAX_BODY_STORAGE_BYTES=1048576
 
-# mitmproxy addon POST /api/ingest/flow — set a secret and match DEEP_PROXY_INGEST_TOKEN when running mitmdump
+# Optional: POST /api/ingest/flow — set a secret and send X-Deep-Proxy-Ingest-Token
 INGEST_API_TOKEN=
-
-# MITM HTTPS (install ca.crt as trusted root on clients). Ports: comma-separated.
-# MITM_ENABLED=false
-# MITM_CA_CERT_PATH=
-# MITM_CA_KEY_PATH=
-# MITM_TLS_PORTS=443,8443
 
 # Dashboard (session cookie auth)
 ADMIN_USERNAME=
 ADMIN_PASSWORD=
 SESSION_SECRET=
 
-# Proxy authentication
+# Proxy authentication (Basic Proxy-Authorization). Set both user and pass; leave empty to disable.
 PROXY_USER=
 PROXY_PASS=
-PROXY_REQUIRE_AUTH=
+# When true (default), require auth if PROXY_USER and PROXY_PASS are set. Set false for local testing only.
+PROXY_REQUIRE_AUTH=true

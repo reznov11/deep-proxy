@@ -16,6 +16,8 @@ from app.models.schemas import ProxyLogDocument
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_HEADER_NAMES = frozenset({"proxy-authorization", "authorization"})
+
 _log_queue: asyncio.Queue[ProxyLogDocument | None] | None = None
 _worker_task: asyncio.Task | None = None
 
@@ -44,6 +46,18 @@ def _try_parse_form(s: str) -> dict[str, list[str]] | None:
         return parse_qs(s, keep_blank_values=True)
     except Exception:
         return None
+
+
+def sanitize_headers_for_log(headers: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not headers:
+        return headers
+    out: dict[str, Any] = {}
+    for k, v in headers.items():
+        if str(k).lower() in _SENSITIVE_HEADER_NAMES:
+            out[k] = "[REDACTED]"
+        else:
+            out[k] = v
+    return out
 
 
 def enrich_parsed_bodies(doc: ProxyLogDocument) -> None:
@@ -117,6 +131,13 @@ def truncate_body(raw: bytes | None, max_bytes: int) -> tuple[str | None, bool]:
 
 
 async def enqueue_log(doc: ProxyLogDocument) -> None:
+    updates: dict[str, Any] = {}
+    if doc.request_headers is not None:
+        updates["request_headers"] = sanitize_headers_for_log(dict(doc.request_headers))
+    if doc.response_headers is not None:
+        updates["response_headers"] = sanitize_headers_for_log(dict(doc.response_headers))
+    if updates:
+        doc = doc.model_copy(update=updates)
     enrich_parsed_bodies(doc)
     q = get_log_queue()
     try:

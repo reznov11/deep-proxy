@@ -1,8 +1,8 @@
 """
-CONNECT support: opaque TCP tunnel only (no TLS termination here).
+CONNECT support: opaque TCP tunnel only (no TLS termination).
 
-With mitmproxy upstream (`--mode upstream:http://host:9090`), decrypted HTTPS is sent as
-`GET https://example.com/...` — handled in tcp_server, not CONNECT.
+HTTPS request/response bodies inside the tunnel are encrypted end-to-end; this proxy only
+logs CONNECT metadata and byte counts, not decrypted application data.
 """
 import asyncio
 import logging
@@ -47,7 +47,7 @@ async def run_connect_tunnel(
     client_ip: str | None,
     connect_headers: dict[str, str] | None = None,
 ) -> None:
-    """Blind TCP tunnel after CONNECT 200. No TLS interception; no _CONNECT_NOTE."""
+    """Blind TCP tunnel after CONNECT 200. TLS is not terminated; logs are metadata-only."""
     t0 = time.perf_counter()
     bytes_up = 0
     bytes_down = 0
@@ -77,6 +77,7 @@ async def run_connect_tunnel(
                 user_agent=_header_ci(connect_headers or {}, "user-agent"),
                 response_status=504,
                 duration_ms=(time.perf_counter() - t0) * 1000,
+                proxy_note="HTTPS tunnel: upstream connect failed (TLS opaque)",
             )
         )
         return
@@ -101,6 +102,7 @@ async def run_connect_tunnel(
                 user_agent=_header_ci(connect_headers or {}, "user-agent"),
                 response_status=502,
                 duration_ms=(time.perf_counter() - t0) * 1000,
+                proxy_note="HTTPS tunnel: upstream connect failed (TLS opaque)",
             )
         )
         return
@@ -183,6 +185,7 @@ async def run_connect_tunnel(
             duration_ms=duration_ms,
             tunnel_bytes_sent=bytes_up,
             tunnel_bytes_received=bytes_down,
+            proxy_note="HTTPS CONNECT tunnel closed (TLS opaque; metadata and byte counts only)",
         )
     )
 
